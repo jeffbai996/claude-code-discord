@@ -61,3 +61,23 @@ comes must resolve to *blocked*, not *executed*.
 - How the hook and the Discord bot share the tool-call id → tap mapping.
 - Per-tool policy: auto-allow read-only tools, only prompt for writes/Bash?
   (A allowlist so you're not tapping ✅ on every `Read`.)
+
+## Known issue this rendezvous also fixes: the tap "flash"
+
+The origin project's tap-card relay carries a tap result back into the session
+by **posting a real Discord message** — an HMAC-signed marker the patched plugin
+intercepts, injects as a prompt, then deletes. The plugin drops ordinary bot
+messages, so a visible post is the only channel back into the session under that
+design. Discord renders the marker for the ~100–300 ms delete round-trip: the
+user sees a message briefly flash below the card and vanish.
+
+There is no way to remove the flash within a post-then-delete transport —
+Discord has no "invisible-body" message flag (`SUPPRESS_NOTIFICATIONS` only kills
+the ping, not the render; ephemeral messages need an interaction context a
+reaction tap doesn't provide). You can shave the delete latency, never zero it.
+
+**The out-of-band rendezvous specified above eliminates it for free.** When the
+tap result is written to a local file/socket the hook polls — instead of
+round-tripping through a visible channel message — nothing is ever posted, so
+there is nothing to flash. Build the rendezvous once; it powers tap-to-approve
+*and* retires the flash on every tap card (choice, veto, todo).
