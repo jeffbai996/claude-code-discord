@@ -21,6 +21,10 @@ dependencies = [
 
 [project.scripts]
 claude-code-discord = "claude_code_discord.cli:main"
+claude-code-discord-turn-state = "claude_code_discord.hooks.turn_state:main"
+claude-code-discord-approve = "claude_code_discord.hooks.approve:main"
+claude-code-discord-tool-trace = "claude_code_discord.hooks.tool_trace:main"
+claude-code-discord-narrate = "claude_code_discord.hooks.narrate:main"
 
 [project.urls]
 Homepage = "https://github.com/jeffbai996/claude-code-discord"

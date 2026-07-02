@@ -584,6 +584,58 @@ def discord_edit_message(token: str, chat_id: str, msg_id: str, content: str) ->
     return _discord_request("PATCH", url, token, body) is not None
 
 
+def _discord_reaction_call(
+    method: str, token: str, channel_id: str, message_id: str, emoji: str,
+    _retry: bool = True,
+) -> bool:
+    """PUT or DELETE /channels/{ch}/messages/{msg}/reactions/{emoji}/@me.
+
+    The raw, STATELESS reaction primitive. Lives in _core (not a hook) because
+    both the turn-state hook and the out-of-session bot poster need it, and
+    hooks must not import each other. The stateful, idempotency-tracking
+    wrappers (discord_react / discord_unreact) stay in the turn_state hook.
+
+    Honors Discord's Retry-After on 429 (single retry). A 404 on DELETE means
+    the reaction/message is already gone — idempotent success, not a failure.
+    """
+    encoded = urllib.parse.quote(emoji)
+    url = (
+        f"https://discord.com/api/v10/channels/{channel_id}"
+        f"/messages/{message_id}/reactions/{encoded}/@me"
+    )
+    req = urllib.request.Request(
+        url,
+        method=method,
+        headers={
+            "Authorization": f"Bot {token}",
+            "Content-Length": "0",
+            "User-Agent": "claude-code-discord/0.1",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            return 200 <= resp.status < 300
+    except urllib.error.HTTPError as e:
+        if e.code == 429 and _retry:
+            retry_after = e.headers.get("Retry-After", "0.5")
+            try:
+                wait = max(0.1, min(2.0, float(retry_after)))
+            except ValueError:
+                wait = 0.5
+            log(f"react {method} 429 backoff {wait}s for {emoji!r}")
+            time.sleep(wait)
+            return _discord_reaction_call(method, token, channel_id, message_id,
+                                          emoji, _retry=False)
+        if e.code == 404:
+            # Already gone — idempotent success so callers can update state.
+            return True
+        log(f"react {method} HTTP {e.code} {channel_id}/{message_id} {emoji!r}")
+        return False
+    except Exception as e:
+        log(f"react {method} failed {channel_id}/{message_id} {emoji!r}: {e}")
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Transcript walker — pick up new assistant text since last_seen
 # ---------------------------------------------------------------------------

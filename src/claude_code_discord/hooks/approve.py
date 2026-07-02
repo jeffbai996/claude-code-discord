@@ -22,7 +22,7 @@ import os
 import sys
 from typing import Any
 
-from claude_code_discord import _rendezvous
+from claude_code_discord import _core, _rendezvous
 
 # Tools that only read state — never gated, so you're not tapping ✅ on every
 # Read. Everything NOT in this set is treated as needing approval (fail safe:
@@ -54,11 +54,29 @@ def _create_and_post(tool_name: str, tool_input: dict[str, Any]) -> str:
 def _post_card(req_id: str, tool_name: str, tool_input: dict[str, Any]) -> None:
     """Post the ✅/❌ approval card. Best-effort: a failed post must not crash the
     hook (the await will simply time out → deny). Kept as its own seam so the bot
-    wiring can evolve without touching the decision logic."""
-    # The Discord bot side (posting + reacting + writing the decision on a tap)
-    # lives in the bot process. Posting from the hook is optional wiring; if it
-    # is not configured, the await times out and we fail closed. Intentionally a
-    # no-op stub here until the bot-side poster is wired.
+    wiring can evolve without touching the decision logic.
+
+    Fail-closed by omission: this posts ONLY when both a bot token and a target
+    channel resolve. The channel comes from the durable last-origin stamp the
+    turn-state/narrate hooks write on every Discord-origin turn — the approve
+    hook fires mid-turn and carries no <channel> tag of its own, so the stamp is
+    how it learns where to post. If the token OR the origin is missing (not a
+    Discord-origin turn, or the bot isn't configured), this stays a no-op and
+    the await simply times out → deny. Any error is swallowed for the same
+    reason: a crash here must not preempt the fail-closed await.
+    """
+    try:
+        from claude_code_discord import bot
+
+        state_dir = _core.detect_discord_state_dir()
+        token = _core.read_bot_token(state_dir)
+        origin = _core._load_last_origin()
+        if not token or origin is None:
+            return None  # unconfigured or non-Discord turn → no-op, await denies
+        chat_id, _message_id, _turn_ts = origin
+        bot.post_card(token, chat_id, req_id)
+    except Exception as e:  # noqa: BLE001 — never let a post error break fail-closed
+        _core.log(f"_post_card failed (staying fail-closed): {e}")
     return None
 
 
