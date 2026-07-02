@@ -1,7 +1,7 @@
 # Plan for B — the live 🤔 think-indicator (deferred feature)
 
-**Status:** deferred from the MVP (Jeff, 2026-07-01). MVP ships feature A (the 🧠
-narration blockquote). This is the plan to greenlight B separately.
+**Status:** deferred from the MVP. The MVP ships feature A (the 🧠 narration
+blockquote). This is the plan to greenlight B separately.
 
 ## What B is
 While Claude is in extended thinking (before it emits any visible output), post a

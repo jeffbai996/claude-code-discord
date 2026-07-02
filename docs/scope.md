@@ -80,7 +80,7 @@ So tap-to-approve is **MVP, not v1.1.** It's the headline feature and it's real.
 
 ---
 
-## Open decisions for Jeff
+## Open decisions
 1. **Runtime/distribution:** Python+pipx (honest, hooks are Python) vs npx wrapper (reads native)? 
 2. **Name:** `claude-code-discord` is descriptive/SEO-friendly. Alternatives? (something punchier might market better, but descriptive wins on discoverability.)
 3. **MVP scope:** the "sharpest MVP" above, or start even smaller (just tool-trace + emoji, ship, then iterate)?
