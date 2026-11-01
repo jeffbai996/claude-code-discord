@@ -1,29 +1,29 @@
 # claude-code-discord
 
-Four Claude Code lifecycle hooks that mirror a live terminal session into a Discord channel: status reactions on the triggering message, streamed between-tool narration, colorized unified diffs and command output, and fail-closed permission prompts you can answer from a phone.
+Claude Code hooks that mirror a terminal session into a Discord channel. A reaction on your message tracks the turn, the commentary between tool calls appears in the channel, edits show up as diffs, and any tool that changes something waits for a tap on your phone.
 
-The source is private; this repository holds the README.
+The source is private. This repository holds only the README.
 
-## What a turn looks like in Discord
+## A turn in Discord
 
-When a Claude Code session takes a message from Discord through the Discord channel plugin, the hooks attach to that message and surface the turn as it runs:
+When a session takes a message from Discord through Claude Code's Discord channel plugin, the hooks attach to that message and show the turn as it runs.
 
-**1. One reaction tracks the turn (`turn-state`).** On `UserPromptSubmit`, `PreToolUse` and `Stop`, the hook removes the previous transient emoji (`0.3 s` spacing between REST calls to avoid Discord 429 rate limits) and applies the current state:
+**Status.** One reaction on your message follows the turn. It starts as 👀 and changes with the kind of tool running. It ends on ✅ if a reply went out, 🖥️ if the turn finished without a reply in Discord, or ❌ if a tool failed and nothing was sent.
 
 ```text
 👀 received  ->  🤔 Bash / 🔧 Edit,Write / 🌐 WebSearch / 🤖 Agent  ->  ✅ replied (or 🖥️ terminal / ❌ errored)
 ```
 
-Read-only tools (`Read`, `Glob`, `Grep`) leave the current reaction in place so a file lookup mid-edit does not flicker the status back to thinking.
+Read, Glob and Grep leave the reaction alone, so a quick lookup in the middle of an edit does not flip the status back to thinking.
 
-**2. Intermediate prose streams into a blockquote (`narrate`).** Assistant commentary between tool calls is read from the session JSONL transcript and edited in place as a `>>>` blockquote:
+**Narration.** The text Claude writes between tool calls is read from the session transcript and shown in a quoted block that is edited in place:
 
 > 💬 ***Narrating…***
 > \> Looking at `src/config.py`. The request timeout is hardcoded at 30 seconds; I'll move it to an environment variable and run the test suite.
 
-Nested triple-backtick fences inside the narration are spliced with zero-width spaces so code blocks cannot break out of Discord's `>>>` quote container. When a narration buffer crosses Discord's 2,000-character message limit, or a Discord reply lands mid-turn, the hook seals the current message and opens a fresh one below it so commentary stays in chronological order.
+Triple backticks inside the narration are broken up with zero-width spaces, so a code block cannot escape the quote. When the text reaches Discord's 2,000-character limit, or a reply lands mid-turn, the hook closes that message and starts a new one below it. That keeps the commentary in the order it happened.
 
-**3. Tool calls and file edits render as live diffs (`tool-trace`).** On `PostToolUse` and `PostToolUseFailure`, the hook edits a single ````diff` message in place:
+**Tool calls and diffs.** Each tool call is a line in one message, edited as the turn goes on. Edits appear as diffs:
 
 ```diff
 + ● Read(src/config.py)
@@ -33,74 +33,65 @@ Nested triple-backtick fences inside the narration are spliced with zero-width s
 - 14 DEBUG = True
 + 14 DEBUG = False
 + 15 TIMEOUT = int(os.environ.get("TIMEOUT", 30))
-+ ● Bash(pytest -q)
-  4 passed in 0.18s
 - ● Bash(./scripts/deploy.sh) FAILED · exit 1
 ```
 
-Discord's `ansi` code blocks only render color on desktop and show raw escape sequences on mobile. `tool-trace` uses ````diff` instead, which colors column-0 `+` green and `-` red on both desktop and mobile. Diff rows are line-numbered with a right-justified gutter and capped at 84 columns (`1,800` characters or 30 lines per edit, dropping whole trailing lines with `... (N more lines)` rather than wrapping mid-line). In `full` mode, up to 20 lines of `Bash` stdout are appended with 32–256 character token strings redacted to `<REDACTED>`.
+Discord colours `ansi` blocks only on desktop, so the hook uses `diff` blocks. They colour a leading `+` green and `-` red on desktop and mobile alike. A message has to fit in 2,000 characters and can only be split between blocks, so one edit is capped at 30 lines or 1,800 characters. Whole trailing lines are dropped with a `... (N more lines)` note, and lines are never wrapped.
 
-**4. Mutating tools wait on a fail-closed permission card (`approve`).** Read-only tools (`Read`, `Grep`, `Glob`, `NotebookRead`, `WebFetch`, `WebSearch`, `TodoWrite`, `TodoRead`) are auto-approved immediately. Any other tool writes a request file to `<state_dir>/rendezvous/<req_id>.req`, posts a card to the channel with `✅` and `❌` reactions, and blocks `PreToolUse` while polling every 50 ms for `<req_id>.resp`:
+**Approval.** Read-only tools (Read, Grep, Glob, NotebookRead, WebFetch, WebSearch, TodoWrite and TodoRead) go through at once. Every other tool, including ones the hook has never seen, writes a request file and posts a card with ✅ and ❌ reactions. The tool call stays blocked until someone taps:
 
 > 🔐 **Approve `Bash`?**
-> `rm -rf ./build`
+> ```
+> rm -rf ./build
+> ```
 > ✅ allow   ❌ deny
 
-## Fail-closed approval and the reaction flash
+## Why approval fails closed
 
-Two design constraints shape the `approve` hook:
+Claude Code's own hook timeout fails open. If a hook is killed at the timeout, the tool call falls through to the normal permission flow and can run. Leaving the decision to that timeout would turn a missed tap into an approval.
 
-- **Claude Code's native hook timeout is fail-open.** A `PreToolUse` hook can block for up to 600 seconds by default, but if the hook process times out or exits non-zero, Claude Code falls through to its normal permission flow and can execute the tool. `claude-code-discord-approve` enforces its own internal deadline (`CCD_APPROVE_TIMEOUT`, default `120` seconds), catches all internal exceptions, and always exits `0` with `"permissionDecision": "deny"` when a tap times out, a response file is missing or corrupt, or posting the card fails.
-- **Out-of-band file rendezvous avoids the Discord message flash.** Relaying a reaction tap back into a Claude Code session by posting and deleting a signed channel message causes a visible 100–300 ms message flash in Discord. Writing the tap decision to a local `<req_id>.resp` file that the blocked `PreToolUse` hook polls keeps the approval entirely off the message stream.
+So the approve hook keeps its own deadline, 120 seconds by default and well under Claude Code's 600. No tap, a missing or corrupt answer, or any internal error ends in an explicit deny. The hook always prints a decision and exits 0. Exiting without one would hand the call back to the normal permission flow.
 
-The card renderer and reaction state machine (`render_card`, `decision_for_emoji`, `handle_reaction`, `scan_pending`) live in `src/claude_code_discord/bot.py`; a standalone Gateway process to watch reactions and write `<req_id>.resp` is not wired into the CLI yet, so without an external watcher mutating tool calls fail closed after the timeout.
+The answer comes back through a local file, not a Discord message. Carrying a tap back by posting and deleting a message makes it flash in the channel. Writing the decision to a file that the waiting hook polls keeps approval off the message stream.
 
-## Hook wiring
-
-`claude-code-discord init` merges four hook scripts into `~/.claude/settings.json` (preserving any existing hooks and unrelated keys):
-
-| Hook executable | Claude Code event | Command wired in `settings.json` | Role |
-|---|---|---|---|
-| `claude-code-discord-turn-state` | `UserPromptSubmit`, `PreToolUse`, `Stop` | `--mode received`, `--mode working`, `--mode terminal` | Single-emoji turn lifecycle reaction on the inbound Discord message |
-| `claude-code-discord-narrate` | `UserPromptSubmit`, `Stop` | `--mode watch`, `--mode finalize` | Streams between-tool assistant prose into an in-place `💬` blockquote |
-| `claude-code-discord-tool-trace` | `PostToolUse`, `PostToolUseFailure` | default, `--failure` | Formats tool calls, line-numbered unified diffs, `Bash` stdout and failure reasons |
-| `claude-code-discord-approve` | `PreToolUse` | default | Auto-allows read-only tools; blocks mutating tools on a fail-closed local rendezvous |
+The card builder and the reaction handler are written, but the bot process that watches Discord for taps and writes the answer file is not wired into the command-line tool yet. A card is also only posted for a turn that came from Discord. Until then, a tool call that needs approval waits out the deadline and is denied.
 
 ## Setup
 
 ```bash
-claude-code-discord init      # prompts for the bot token and channel, merges the hooks, sends a test ping
-claude-code-discord status    # shows the wired hooks and whether the token is set
+claude-code-discord init      # asks for the bot token and channel, adds the hooks, sends a test message
+claude-code-discord status    # lists the wired hooks and whether a token is set
 claude-code-discord off       # removes the hooks and keeps the token
 ```
 
-`init` also takes `--token`, `--channel` and `--no-ping` for non-interactive setup.
+`init` adds its hooks to `~/.claude/settings.json` and leaves your other hooks and settings alone. It also takes `--token`, `--channel` and `--no-ping` for a non-interactive install.
 
 ## Configuration
 
-All output is opt-in per channel. Channel configuration files live in the Discord plugin state directory (`$DISCORD_STATE_DIR`, else `$CLAUDE_CONFIG_DIR/channels/discord`, else `~/.claude/channels/discord`) and are keyed by Discord channel ID:
+Narration and tool output are off until you turn them on for a channel. The settings are two JSON files, keyed by Discord channel ID, in the Discord plugin's state directory. That is `$DISCORD_STATE_DIR`, else `$CLAUDE_CONFIG_DIR/channels/discord`, else `~/.claude/channels/discord`.
 
-- **`narrate.json`** — `{"<channel_id>": "collapse"}`:
-  - `never` (default): narration hook is a no-op.
-  - `collapse`: streams live `💬 ***Narrating…***` blockquotes during the turn and deletes them at `Stop` once the final reply lands.
-  - `always`: keeps the narration in the channel and settles the header to `💬 **Narration**` at `Stop`.
-- **`tools.json`** — `{"<channel_id>": "diffs"}`:
-  - `off` (default): tool-trace hook is a no-op.
-  - `ticker`: one line per tool call (`+ ● Edit(src/config.py)` or `- ● Bash(...) FAILED · exit 1`).
-  - `diffs`: ticker plus line-numbered unified diffs for `Edit`, `Write` and `MultiEdit`, and line counts for `Read`.
-  - `full`: `diffs` plus up to 20 lines of secret-redacted `Bash` stdout per command.
-  - `collapse`: shows `diffs` while the turn is running and deletes the trace message at `Stop`.
+`narrate.json`, as in `{"<channel_id>": "collapse"}`:
 
-Runtime state (`state.json`, `last_origin.json`, `narrate.log` and `rendezvous/`) lives in `$CCD_STATE_DIR` (default `~/.claude/claude-code-discord`).
+- `never` (default): no narration.
+- `collapse`: show the live block during the turn and delete it once the final reply lands.
+- `always`: keep it, and change the header to `💬 **Narration**` at the end.
 
-| Environment variable | Default | Purpose |
+`tools.json`, as in `{"<channel_id>": "diffs"}`:
+
+- `off` (default): no trace.
+- `ticker`: one line per tool call.
+- `diffs`: the ticker plus line-numbered diffs for `Edit`, `Write` and `MultiEdit`, and line counts for `Read`.
+- `full`: `diffs` plus up to 20 lines of Bash output, with long token-like strings replaced by `<REDACTED>`.
+- `collapse`: the same as `diffs` while the turn runs, then the message is deleted.
+
+| Environment variable | Default | What it sets |
 |---|---|---|
-| `CCD_APPROVE_TIMEOUT` | `120` | Seconds `approve` polls for a tap before returning `"deny"` |
-| `CCD_STATE_DIR` | `~/.claude/claude-code-discord` | Runtime state, origin cache and `rendezvous/` directory |
-| `CCD_SETTINGS_PATH` | `~/.claude/settings.json` | Target settings file for `init`, `status` and `off` |
-| `CCD_LOG` | `$CCD_STATE_DIR/narrate.log` | Hook diagnostic log path |
-| `DISCORD_STATE_DIR` | `~/.claude/channels/discord` | Directory containing `.env`, `narrate.json` and `tools.json` |
+| `CCD_APPROVE_TIMEOUT` | `120` | Seconds the approve hook waits for a tap before denying |
+| `CCD_STATE_DIR` | `~/.claude/claude-code-discord` | Runtime state: `state.json`, `last_origin.json`, `narrate.log` and `rendezvous/` |
+| `CCD_SETTINGS_PATH` | `~/.claude/settings.json` | The settings file that `init`, `status` and `off` edit |
+| `CCD_LOG` | `$CCD_STATE_DIR/narrate.log` | The hook log |
+| `DISCORD_STATE_DIR` | `~/.claude/channels/discord` | The directory with `.env`, `narrate.json` and `tools.json` |
 
----
+## License
 
 Source code is proprietary.
